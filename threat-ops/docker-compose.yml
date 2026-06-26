@@ -1,0 +1,109 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tasks_db
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ${REGISTRY_IMAGE:-threat-ops}/backend:${IMAGE_TAG:-latest}
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/tasks_db
+      S3_ENDPOINT: http://minio:9000
+      ANALYTICS_URL: http://analytics:8001
+      ADMIN_PASSWORD: ""
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  analytics:
+    image: ${REGISTRY_IMAGE:-threat-ops}/analytics:${IMAGE_TAG:-latest}
+    build: ./analytics
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      VISHING_URL: http://vishing:8002
+      OSINT_URL: http://osint:8003
+      BACKEND_URL: http://backend:8000
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      - minio
+      - vishing
+      - osint
+
+  vishing:
+    image: ${REGISTRY_IMAGE:-threat-ops}/vishing:${IMAGE_TAG:-latest}
+    build: ./vishing
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    env_file: .env
+    environment:
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  osint:
+    image: ${REGISTRY_IMAGE:-threat-ops}/osint:${IMAGE_TAG:-latest}
+    build: ./osint
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    env_file: .env
+    environment:
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  frontend:
+    image: ${REGISTRY_IMAGE:-threat-ops}/frontend:${IMAGE_TAG:-latest}
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
+  minio_data:
